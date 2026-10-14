@@ -13,9 +13,6 @@ async function fetchUsersToScrape() {
   const data = await res.json();
   return data.users || [];
 }
-  const data = await res.json();
-  return data.users || [];
-}
 
 async function scrapeProfile(browser, profileUrl) {
   const page = await browser.newPage();
@@ -101,7 +98,7 @@ async function scrapeProfile(browser, profileUrl) {
 }
 
 async function run() {
-  console.log('=== Starting Aayush Trailhead Tracker Sync ===');
+  console.log('=== Starting Trailhead Tracker Sync ===');
   
   const users = await fetchUsersToScrape();
   if (!users || users.length === 0) {
