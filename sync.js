@@ -22,17 +22,17 @@ async function fetchUsersToScrape() {
 async function scrapeProfile(browser, profileUrl) {
   const page = await browser.newPage();
   
-  await page.setViewport({ width: 1280, height: 800 });
-  await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
   try {
     console.log(`Visiting profile: ${profileUrl}`);
+    
+    // Navigate and allow network to finish
     await page.goto(profileUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    await page.waitForFunction(() => {
-      const text = document.body.innerText;
-      return text.includes('Badges') && text.includes('Points');
-    }, { timeout: 30000 });
+    // Give the dynamic Salesforce LWC components 8 seconds to render badges on screen
+    await new Promise(r => setTimeout(r, 8000));
 
     const stats = await page.evaluate(() => {
       let badges = 0;
@@ -40,19 +40,39 @@ async function scrapeProfile(browser, profileUrl) {
       let trails = 0;
       let rank = '';
 
-      const bodyText = document.body.innerText;
+      const bodyText = document.body.innerText || '';
 
-      const badgeMatch = bodyText.match(/([\d,]+)\s*\n\s*Badges/i) || bodyText.match(/([\d,]+)\s+Badges/i);
+      // Pattern 1: Look for "8\nBadges" or "8 Badges"
+      const badgeMatch = bodyText.match(/([\d,]+)\s*(?:\n|\s+)\s*Badges/i);
       if (badgeMatch) badges = parseInt(badgeMatch[1].replace(/,/g, ''), 10);
 
-      const pointMatch = bodyText.match(/([\d,]+)\s*\n\s*Points/i) || bodyText.match(/([\d,]+)\s+Points/i);
+      // Pattern 2: Look for "11,775\nPoints" or "11,775 Points"
+      const pointMatch = bodyText.match(/([\d,]+)\s*(?:\n|\s+)\s*Points/i);
       if (pointMatch) points = parseInt(pointMatch[1].replace(/,/g, ''), 10);
 
-      const trailMatch = bodyText.match(/([\d,]+)\s*\n\s*Trails/i) || bodyText.match(/([\d,]+)\s+Trails/i);
+      // Pattern 3: Look for "1\nTrails" or "1 Trails"
+      const trailMatch = bodyText.match(/([\d,]+)\s*(?:\n|\s+)\s*Trails/i);
       if (trailMatch) trails = parseInt(trailMatch[1].replace(/,/g, ''), 10);
 
+      // Pattern 4: Rank
       const rankMatch = bodyText.match(/(Ranger|Expeditioner|Explorer|Adventurer|Mountaineer|Hiker|Scout)/i);
       if (rankMatch) rank = rankMatch[1];
+
+      // Fallback: Check for data attributes or span values
+      if (!badges || !points) {
+        const elements = document.querySelectorAll('h1, h2, h3, h4, span, div, p');
+        for (let i = 0; i < elements.length; i++) {
+          const t = (elements[i].innerText || '').trim();
+          if (t.toLowerCase() === 'badges' && i > 0) {
+            const prev = (elements[i-1].innerText || '').replace(/,/g, '').trim();
+            if (/^\d+$/.test(prev)) badges = parseInt(prev, 10);
+          }
+          if (t.toLowerCase() === 'points' && i > 0) {
+            const prev = (elements[i-1].innerText || '').replace(/,/g, '').trim();
+            if (/^\d+$/.test(prev)) points = parseInt(prev, 10);
+          }
+        }
+      }
 
       return { badges, points, trails, rank };
     });
