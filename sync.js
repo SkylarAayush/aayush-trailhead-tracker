@@ -22,63 +22,85 @@ async function fetchUsersToScrape() {
 async function scrapeProfile(browser, profileUrl) {
   const page = await browser.newPage();
   
+  // Anti-bot detection stealth settings
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+
   await page.setViewport({ width: 1440, height: 900 });
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
+  let interceptedStats = null;
+
+  // Intercept the underlying GraphQL response from Trailhead's API
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (url.includes('trailhead') && (url.includes('graphql') || url.includes('profile'))) {
+      try {
+        const json = await response.json();
+        const stats = json?.data?.profile?.trailheadStats || json?.data?.profile?.userProfileCounts;
+        if (stats) {
+          interceptedStats = {
+            badges: Number(stats.earnedBadgesCount || stats.badgesCount) || 0,
+            points: Number(stats.earnedPointsSum || stats.pointsCount) || 0,
+            trails: Number(stats.completedTrailCount || stats.trailsCount) || 0,
+            rank: stats.rank?.title || ''
+          };
+          console.log(`[API Intercepted]: ${JSON.stringify(interceptedStats)}`);
+        }
+      } catch (_) {}
+    }
+  });
+
   try {
     console.log(`Visiting profile: ${profileUrl}`);
-    
-    // Navigate and allow network to finish
-    await page.goto(profileUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto(profileUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 6000));
 
-    // Give the dynamic Salesforce LWC components 8 seconds to render badges on screen
-    await new Promise(r => setTimeout(r, 8000));
+    // If API intercepted directly, return it
+    if (interceptedStats && (interceptedStats.badges > 0 || interceptedStats.points > 0)) {
+      return interceptedStats;
+    }
 
-    const stats = await page.evaluate(() => {
+    // Otherwise, parse the rendered DOM
+    const domStats = await page.evaluate(() => {
       let badges = 0;
       let points = 0;
       let trails = 0;
       let rank = '';
 
-      const bodyText = document.body.innerText || '';
+      const text = document.body.innerText || '';
 
-      // Pattern 1: Look for "8\nBadges" or "8 Badges"
-      const badgeMatch = bodyText.match(/([\d,]+)\s*(?:\n|\s+)\s*Badges/i);
-      if (badgeMatch) badges = parseInt(badgeMatch[1].replace(/,/g, ''), 10);
+      // Match numbers next to Badges/Points in text
+      const bM = text.match(/(\d[\d,]*)\s*(?:\n|\s+)?Badges/i);
+      const pM = text.match(/(\d[\d,]*)\s*(?:\n|\s+)?Points/i);
+      const tM = text.match(/(\d[\d,]*)\s*(?:\n|\s+)?Trails/i);
+      const rM = text.match(/(Ranger|Expeditioner|Explorer|Adventurer|Mountaineer|Hiker|Scout)/i);
 
-      // Pattern 2: Look for "11,775\nPoints" or "11,775 Points"
-      const pointMatch = bodyText.match(/([\d,]+)\s*(?:\n|\s+)\s*Points/i);
-      if (pointMatch) points = parseInt(pointMatch[1].replace(/,/g, ''), 10);
+      if (bM) badges = parseInt(bM[1].replace(/,/g, ''), 10);
+      if (pM) points = parseInt(pM[1].replace(/,/g, ''), 10);
+      if (tM) trails = parseInt(tM[1].replace(/,/g, ''), 10);
+      if (rM) rank = rM[1];
 
-      // Pattern 3: Look for "1\nTrails" or "1 Trails"
-      const trailMatch = bodyText.match(/([\d,]+)\s*(?:\n|\s+)\s*Trails/i);
-      if (trailMatch) trails = parseInt(trailMatch[1].replace(/,/g, ''), 10);
-
-      // Pattern 4: Rank
-      const rankMatch = bodyText.match(/(Ranger|Expeditioner|Explorer|Adventurer|Mountaineer|Hiker|Scout)/i);
-      if (rankMatch) rank = rankMatch[1];
-
-      // Fallback: Check for data attributes or span values
+      // If still 0, look for all elements with numbers
       if (!badges || !points) {
-        const elements = document.querySelectorAll('h1, h2, h3, h4, span, div, p');
-        for (let i = 0; i < elements.length; i++) {
-          const t = (elements[i].innerText || '').trim();
-          if (t.toLowerCase() === 'badges' && i > 0) {
-            const prev = (elements[i-1].innerText || '').replace(/,/g, '').trim();
-            if (/^\d+$/.test(prev)) badges = parseInt(prev, 10);
+        document.querySelectorAll('div, span, p, h1, h2, h3').forEach(el => {
+          const t = el.innerText ? el.innerText.trim() : '';
+          if (/^(\d[\d,]*)$/.test(t)) {
+            const next = el.nextElementSibling ? el.nextElementSibling.innerText.trim().toLowerCase() : '';
+            const parent = el.parentElement ? el.parentElement.innerText.toLowerCase() : '';
+            if (next === 'badges' || parent.includes('badges')) badges = parseInt(t.replace(/,/g, ''), 10);
+            if (next === 'points' || parent.includes('points')) points = parseInt(t.replace(/,/g, ''), 10);
+            if (next === 'trails' || parent.includes('trails')) trails = parseInt(t.replace(/,/g, ''), 10);
           }
-          if (t.toLowerCase() === 'points' && i > 0) {
-            const prev = (elements[i-1].innerText || '').replace(/,/g, '').trim();
-            if (/^\d+$/.test(prev)) points = parseInt(prev, 10);
-          }
-        }
+        });
       }
 
       return { badges, points, trails, rank };
     });
 
-    console.log(`-> Extracted: ${stats.badges} Badges | ${stats.points.toLocaleString()} Points | ${stats.trails} Trails | Rank: ${stats.rank}`);
-    return stats;
+    console.log(`-> Extracted: ${domStats.badges} Badges | ${domStats.points.toLocaleString()} Points | ${domStats.trails} Trails | Rank: ${domStats.rank}`);
+    return domStats;
   } catch (err) {
     console.error(`Error scraping ${profileUrl}:`, err.message);
     return null;
@@ -103,8 +125,7 @@ async function run() {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--disable-gpu'
+      '--disable-blink-features=AutomationControlled'
     ]
   });
 
