@@ -9,12 +9,10 @@ if (!WEB_APP_URL) {
 
 async function fetchUsersToScrape() {
   console.log('Fetching registered users from Google Sheet...');
-  const res = await fetch(WEB_APP_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'getUsers' }),
-    redirect: 'follow'
-  });
+  const res = await fetch(`${WEB_APP_URL}?action=getUsers`);
+  const data = await res.json();
+  return data.users || [];
+}
   const data = await res.json();
   return data.users || [];
 }
